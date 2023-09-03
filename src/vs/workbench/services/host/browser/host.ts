@@ -5,14 +5,14 @@
 
 import { Event } from 'vs/base/common/event';
 import { createDecorator } from 'vs/platform/instantiation/common/instantiation';
-import { IWindowOpenable, IOpenWindowOptions, IOpenEmptyWindowOptions } from 'vs/platform/windows/common/windows';
+import { IWindowOpenable, IOpenWindowOptions, IOpenEmptyWindowOptions } from 'vs/platform/window/common/window';
 
 export const IHostService = createDecorator<IHostService>('hostService');
 
 /**
  * A set of methods supported in both web and native environments.
  *
- * @see `INativeHostService` for methods that are specific to native
+ * @see {@link INativeHostService} for methods that are specific to native
  * environments.
  */
 export interface IHostService {
@@ -87,6 +87,12 @@ export interface IHostService {
 	 * Attempt to close the active window.
 	 */
 	close(): Promise<void>;
+
+	/**
+	 * Execute an asynchronous `expectedShutdownTask`. While this task is
+	 * in progress, attempts to quit the application will not be vetoed with a dialog.
+	 */
+	withExpectedShutdown<T>(expectedShutdownTask: () => Promise<T>): Promise<T>;
 
 	//#endregion
 }

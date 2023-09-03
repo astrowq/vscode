@@ -7,17 +7,14 @@ import { findFirstInSorted } from 'vs/base/common/arrays';
 import { RunOnceScheduler } from 'vs/base/common/async';
 import { Emitter, Event } from 'vs/base/common/event';
 import { once } from 'vs/base/common/functional';
-import { Iterable } from 'vs/base/common/iterator';
-import { equals } from 'vs/base/common/objects';
 import { generateUuid } from 'vs/base/common/uuid';
 import { IContextKey, IContextKeyService } from 'vs/platform/contextkey/common/contextkey';
 import { createDecorator } from 'vs/platform/instantiation/common/instantiation';
-import { TestResultState } from 'vs/workbench/api/common/extHostTypes';
-import { RunTestsRequest, TestResultItem } from 'vs/workbench/contrib/testing/common/testCollection';
 import { TestingContextKeys } from 'vs/workbench/contrib/testing/common/testingContextKeys';
+import { ITestProfileService } from 'vs/workbench/contrib/testing/common/testProfileService';
 import { ITestResult, LiveTestResult, TestResultItemChange, TestResultItemChangeReason } from 'vs/workbench/contrib/testing/common/testResult';
 import { ITestResultStorage, RETAIN_MAX_RESULTS } from 'vs/workbench/contrib/testing/common/testResultStorage';
-import { IMainThreadTestCollection } from 'vs/workbench/contrib/testing/common/testService';
+import { ExtensionRunTestsRequest, ITestRunProfile, ResolvedTestRunRequest, TestResultItem, TestResultState } from 'vs/workbench/contrib/testing/common/testTypes';
 
 export type ResultChangeEvent =
 	| { completed: LiveTestResult }
@@ -50,7 +47,7 @@ export interface ITestResultService {
 	/**
 	 * Creates a new, live test result.
 	 */
-	createLiveResult(collections: ReadonlyArray<IMainThreadTestCollection>, req: RunTestsRequest): LiveTestResult;
+	createLiveResult(req: ResolvedTestRunRequest | ExtensionRunTestsRequest): LiveTestResult;
 
 	/**
 	 * Adds a new test result to the collection.
@@ -68,15 +65,10 @@ export interface ITestResultService {
 	getStateById(extId: string): [results: ITestResult, item: TestResultItem] | undefined;
 }
 
-export const ITestResultService = createDecorator<ITestResultService>('testResultService');
+const isRunningTests = (service: ITestResultService) =>
+	service.results.length > 0 && service.results[0].completedAt === undefined;
 
-/**
- * Returns if the tests in the results are exactly equal. Check the counts
- * first as a cheap check before starting to iterate.
- */
-const resultsEqual = (a: ITestResult, b: ITestResult) =>
-	a.completedAt === b.completedAt && equals(a.counts, b.counts) && Iterable.equals(a.tests, b.tests,
-		(at, bt) => equals(at.state, bt.state) && equals(at.item, bt.item));
+export const ITestResultService = createDecorator<ITestResultService>('testResultService');
 
 export class TestResultService implements ITestResultService {
 	declare _serviceBrand: undefined;
@@ -103,6 +95,7 @@ export class TestResultService implements ITestResultService {
 	public readonly onTestChanged = this.testChangeEmitter.event;
 
 	private readonly isRunning: IContextKey<boolean>;
+	private readonly hasAnyResults: IContextKey<boolean>;
 	private readonly loadResults = once(() => this.storage.read().then(loaded => {
 		for (let i = loaded.length - 1; i >= 0; i--) {
 			this.push(loaded[i]);
@@ -114,8 +107,10 @@ export class TestResultService implements ITestResultService {
 	constructor(
 		@IContextKeyService contextKeyService: IContextKeyService,
 		@ITestResultStorage private readonly storage: ITestResultStorage,
+		@ITestProfileService private readonly testProfiles: ITestProfileService,
 	) {
 		this.isRunning = TestingContextKeys.isRunning.bindTo(contextKeyService);
+		this.hasAnyResults = TestingContextKeys.hasAnyResults.bindTo(contextKeyService);
 	}
 
 	/**
@@ -135,9 +130,35 @@ export class TestResultService implements ITestResultService {
 	/**
 	 * @inheritdoc
 	 */
-	public createLiveResult(collections: ReadonlyArray<IMainThreadTestCollection>, req: RunTestsRequest) {
-		const id = generateUuid();
-		return this.push(LiveTestResult.from(id, collections, this.storage.getOutputController(id), req));
+	public createLiveResult(req: ResolvedTestRunRequest | ExtensionRunTestsRequest) {
+		if ('targets' in req) {
+			const id = generateUuid();
+			return this.push(new LiveTestResult(id, true, req));
+		}
+
+		let profile: ITestRunProfile | undefined;
+		if (req.profile) {
+			const profiles = this.testProfiles.getControllerProfiles(req.controllerId);
+			profile = profiles.find(c => c.profileId === req.profile!.id);
+		}
+
+		const resolved: ResolvedTestRunRequest = {
+			isUiTriggered: false,
+			targets: [],
+			exclude: req.exclude,
+			continuous: req.continuous,
+		};
+
+		if (profile) {
+			resolved.targets.push({
+				profileGroup: profile.group,
+				profileId: profile.profileId,
+				controllerId: req.controllerId,
+				testIds: req.include,
+			});
+		}
+
+		return this.push(new LiveTestResult(req.id, req.persist, resolved));
 	}
 
 	/**
@@ -148,15 +169,11 @@ export class TestResultService implements ITestResultService {
 			this.results.unshift(result);
 		} else {
 			const index = findFirstInSorted(this.results, r => r.completedAt !== undefined && r.completedAt <= result.completedAt!);
-			const prev = this.results[index];
-			if (prev && resultsEqual(result, prev)) {
-				return result;
-			}
-
 			this.results.splice(index, 0, result);
 			this.persistScheduler.schedule();
 		}
 
+		this.hasAnyResults.set(true);
 		if (this.results.length > RETAIN_MAX_RESULTS) {
 			this.results.pop();
 		}
@@ -166,7 +183,6 @@ export class TestResultService implements ITestResultService {
 			result.onChange(this.testChangeEmitter.fire, this.testChangeEmitter);
 			this.isRunning.set(true);
 			this.changeResultEmitter.fire({ started: result });
-			result.setAllToState(TestResultState.Queued, () => true);
 		} else {
 			this.changeResultEmitter.fire({ inserted: result });
 			// If this is not a new result, go through each of its tests. For each
@@ -210,6 +226,9 @@ export class TestResultService implements ITestResultService {
 
 		this._results = keep;
 		this.persistScheduler.schedule();
+		if (keep.length === 0) {
+			this.hasAnyResults.set(false);
+		}
 		this.changeResultEmitter.fire({ removed });
 	}
 
@@ -225,7 +244,7 @@ export class TestResultService implements ITestResultService {
 	}
 
 	private updateIsRunning() {
-		this.isRunning.set(this.results.length > 0 && this.results[0].completedAt === undefined);
+		this.isRunning.set(isRunningTests(this));
 	}
 
 	protected async persistImmediately() {

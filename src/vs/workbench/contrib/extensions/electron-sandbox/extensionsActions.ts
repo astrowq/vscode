@@ -4,31 +4,34 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { localize } from 'vs/nls';
-import { Action } from 'vs/base/common/actions';
 import { IFileService } from 'vs/platform/files/common/files';
 import { URI } from 'vs/base/common/uri';
 import { INativeWorkbenchEnvironmentService } from 'vs/workbench/services/environment/electron-sandbox/environmentService';
-import { INativeHostService } from 'vs/platform/native/electron-sandbox/native';
+import { INativeHostService } from 'vs/platform/native/common/native';
 import { Schemas } from 'vs/base/common/network';
+import { Action2 } from 'vs/platform/actions/common/actions';
+import { ServicesAccessor } from 'vs/platform/instantiation/common/instantiation';
+import { ExtensionsLocalizedLabel, IExtensionManagementService } from 'vs/platform/extensionManagement/common/extensionManagement';
+import { Categories } from 'vs/platform/action/common/actionCommonCategories';
 
-export class OpenExtensionsFolderAction extends Action {
+export class OpenExtensionsFolderAction extends Action2 {
 
-	static readonly ID = 'workbench.extensions.action.openExtensionsFolder';
-	static readonly LABEL = localize('openExtensionsFolder', "Open Extensions Folder");
-
-	constructor(
-		id: string,
-		label: string,
-		@INativeHostService private readonly nativeHostService: INativeHostService,
-		@IFileService private readonly fileService: IFileService,
-		@INativeWorkbenchEnvironmentService private readonly environmentService: INativeWorkbenchEnvironmentService
-	) {
-		super(id, label, undefined, true);
+	constructor() {
+		super({
+			id: 'workbench.extensions.action.openExtensionsFolder',
+			title: { value: localize('openExtensionsFolder', "Open Extensions Folder"), original: 'Open Extensions Folder' },
+			category: ExtensionsLocalizedLabel,
+			f1: true
+		});
 	}
 
-	async override run(): Promise<void> {
-		const extensionsHome = URI.file(this.environmentService.extensionsPath);
-		const file = await this.fileService.resolve(extensionsHome);
+	async run(accessor: ServicesAccessor): Promise<void> {
+		const nativeHostService = accessor.get(INativeHostService);
+		const fileService = accessor.get(IFileService);
+		const environmentService = accessor.get(INativeWorkbenchEnvironmentService);
+
+		const extensionsHome = URI.file(environmentService.extensionsPath);
+		const file = await fileService.resolve(extensionsHome);
 
 		let itemToShow: URI;
 		if (file.children && file.children.length > 0) {
@@ -38,8 +41,25 @@ export class OpenExtensionsFolderAction extends Action {
 		}
 
 		if (itemToShow.scheme === Schemas.file) {
-			return this.nativeHostService.showItemInFolder(itemToShow.fsPath);
+			return nativeHostService.showItemInFolder(itemToShow.fsPath);
 		}
+	}
+}
+
+export class CleanUpExtensionsFolderAction extends Action2 {
+
+	constructor() {
+		super({
+			id: '_workbench.extensions.action.cleanUpExtensionsFolder',
+			title: { value: localize('cleanUpExtensionsFolder', "Cleanup Extensions Folder"), original: 'Cleanup Extensions Folder' },
+			category: Categories.Developer,
+			f1: true
+		});
+	}
+
+	async run(accessor: ServicesAccessor): Promise<void> {
+		const extensionManagementService = accessor.get(IExtensionManagementService);
+		return extensionManagementService.cleanUp();
 	}
 }
 

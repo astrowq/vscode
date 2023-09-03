@@ -10,7 +10,7 @@ import { mock } from 'vs/workbench/test/common/workbenchTestServices';
 import { InstantiationService } from 'vs/platform/instantiation/common/instantiationService';
 import { ServiceCollection } from 'vs/platform/instantiation/common/serviceCollection';
 import { IInstantiationService } from 'vs/platform/instantiation/common/instantiation';
-import { IModelService } from 'vs/editor/common/services/modelService';
+import { IModelService } from 'vs/editor/common/services/model';
 import { URI } from 'vs/base/common/uri';
 import { BulkFileOperations } from 'vs/workbench/contrib/bulkEdit/browser/preview/bulkEditPreview';
 import { Range } from 'vs/editor/common/core/range';
@@ -25,7 +25,7 @@ suite('BulkEditPreview', function () {
 
 		const fileService: IFileService = new class extends mock<IFileService>() {
 			override onDidFilesChange = Event.None;
-			async override exists() {
+			override async exists() {
 				return true;
 			}
 		};

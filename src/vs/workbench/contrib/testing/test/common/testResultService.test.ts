@@ -5,52 +5,88 @@
 
 import * as assert from 'assert';
 import { timeout } from 'vs/base/common/async';
-import { bufferToStream, newWriteableBufferStream, VSBuffer } from 'vs/base/common/buffer';
-import { Lazy } from 'vs/base/common/lazy';
+import { VSBuffer } from 'vs/base/common/buffer';
 import { MockContextKeyService } from 'vs/platform/keybinding/test/common/mockKeybindingService';
 import { NullLogService } from 'vs/platform/log/common/log';
-import { InternalTestItem } from 'vs/workbench/contrib/testing/common/testCollection';
-import { HydratedTestResult, LiveOutputController, LiveTestResult, makeEmptyCounts, TestResultItemChange, TestResultItemChangeReason } from 'vs/workbench/contrib/testing/common/testResult';
+import { TestId } from 'vs/workbench/contrib/testing/common/testId';
+import { TestProfileService } from 'vs/workbench/contrib/testing/common/testProfileService';
+import { HydratedTestResult, LiveTestResult, resultItemParents, TaskRawOutput, TestResultItemChange, TestResultItemChangeReason } from 'vs/workbench/contrib/testing/common/testResult';
 import { TestResultService } from 'vs/workbench/contrib/testing/common/testResultService';
 import { InMemoryResultStorage, ITestResultStorage } from 'vs/workbench/contrib/testing/common/testResultStorage';
-import { ReExportedTestRunState as TestRunState } from 'vs/workbench/contrib/testing/common/testStubs';
-import { getInitializedMainTestCollection } from 'vs/workbench/contrib/testing/test/common/ownedTestCollection';
+import { ITestTaskState, ResolvedTestRunRequest, TestResultItem, TestResultState, TestRunProfileBitset } from 'vs/workbench/contrib/testing/common/testTypes';
+import { makeEmptyCounts } from 'vs/workbench/contrib/testing/common/testingStates';
+import { getInitializedMainTestCollection, testStubs, TestTestCollection } from 'vs/workbench/contrib/testing/test/common/testStubs';
 import { TestStorageService } from 'vs/workbench/test/common/workbenchTestServices';
 
-export const emptyOutputController = () => new LiveOutputController(
-	new Lazy(() => [newWriteableBufferStream(), Promise.resolve()]),
-	() => Promise.resolve(bufferToStream(VSBuffer.alloc(0))),
-);
-
 suite('Workbench - Test Results Service', () => {
-	const getLabelsIn = (it: Iterable<InternalTestItem>) => [...it].map(t => t.item.label).sort();
+	const getLabelsIn = (it: Iterable<TestResultItem>) => [...it].map(t => t.item.label).sort();
 	const getChangeSummary = () => [...changed]
-		.map(c => ({ reason: c.reason, label: c.item.item.label }))
-		.sort((a, b) => a.label.localeCompare(b.label));
+		.map(c => ({ reason: c.reason, label: c.item.item.label }));
 
-	let r: LiveTestResult;
+	let r: TestLiveTestResult;
 	let changed = new Set<TestResultItemChange>();
+	let tests: TestTestCollection;
+
+	const defaultOpts = (testIds: string[]): ResolvedTestRunRequest => ({
+		targets: [{
+			profileGroup: TestRunProfileBitset.Run,
+			profileId: 0,
+			controllerId: 'ctrlId',
+			testIds,
+		}]
+	});
+
+	class TestLiveTestResult extends LiveTestResult {
+		public setAllToStatePublic(state: TestResultState, taskId: string, when: (task: ITestTaskState, item: TestResultItem) => boolean) {
+			this.setAllToState(state, taskId, when);
+		}
+	}
 
 	setup(async () => {
 		changed = new Set();
-		r = LiveTestResult.from(
+		r = new TestLiveTestResult(
 			'foo',
-			[await getInitializedMainTestCollection()],
-			emptyOutputController(),
-			{ tests: [{ src: { provider: 'provider', tree: 0 }, testId: 'id-a' }], debug: false },
+			true,
+			defaultOpts(['id-a']),
 		);
 
 		r.onChange(e => changed.add(e));
+		r.addTask({ id: 't', name: undefined, running: true });
+
+		tests = testStubs.nested();
+		const ok = await Promise.race([
+			Promise.resolve(tests.expand(tests.root.id, Infinity)).then(() => true),
+			timeout(1000).then(() => false),
+		]);
+
+		// todo@connor4312: debug for tests #137853:
+		if (!ok) {
+			throw new Error('timed out while expanding, diff: ' + JSON.stringify(tests.collectDiff()));
+		}
+
+		r.addTestChainToRun('ctrlId', [
+			tests.root.toTestItem(),
+			tests.root.children.get('id-a')!.toTestItem(),
+			tests.root.children.get('id-a')!.children.get('id-aa')!.toTestItem(),
+		]);
+
+		r.addTestChainToRun('ctrlId', [
+			tests.root.children.get('id-a')!.toTestItem(),
+			tests.root.children.get('id-a')!.children.get('id-ab')!.toTestItem(),
+		]);
 	});
 
 	suite('LiveTestResult', () => {
-		test('is empty if no tests are requesteed', async () => {
-			const r = LiveTestResult.from('', [await getInitializedMainTestCollection()], emptyOutputController(), { tests: [], debug: false });
-			assert.deepStrictEqual(getLabelsIn(r.tests), []);
+		test('is empty if no tests are yet present', async () => {
+			assert.deepStrictEqual(getLabelsIn(new TestLiveTestResult(
+				'foo',
+				false,
+				defaultOpts(['id-a']),
+			).tests), []);
 		});
 
-		test('does not change or retire initially', () => {
-			assert.deepStrictEqual(0, changed.size);
+		test('initially queues nothing', () => {
+			assert.deepStrictEqual(getChangeSummary(), []);
 		});
 
 		test('initializes with the subtree of requested tests', () => {
@@ -58,85 +94,90 @@ suite('Workbench - Test Results Service', () => {
 		});
 
 		test('initializes with valid counts', () => {
-			assert.deepStrictEqual(r.counts, {
-				...makeEmptyCounts(),
-				[TestRunState.Unset]: 4
-			});
+			const c = makeEmptyCounts();
+			c[TestResultState.Unset] = 4;
+			assert.deepStrictEqual(r.counts, c);
 		});
 
 		test('setAllToState', () => {
-			r.setAllToState(TestRunState.Queued, t => t.item.label !== 'root');
-			assert.deepStrictEqual(r.counts, {
-				...makeEmptyCounts(),
-				[TestRunState.Unset]: 1,
-				[TestRunState.Queued]: 3,
-			});
+			changed.clear();
+			r.setAllToStatePublic(TestResultState.Queued, 't', (_, t) => t.item.label !== 'root');
+			const c = makeEmptyCounts();
+			c[TestResultState.Unset] = 1;
+			c[TestResultState.Queued] = 3;
+			assert.deepStrictEqual(r.counts, c);
 
-			assert.deepStrictEqual(r.getStateById('id-a')?.state.state, TestRunState.Queued);
+			r.setAllToStatePublic(TestResultState.Failed, 't', (_, t) => t.item.label !== 'root');
+			const c2 = makeEmptyCounts();
+			c2[TestResultState.Unset] = 1;
+			c2[TestResultState.Failed] = 3;
+			assert.deepStrictEqual(r.counts, c2);
+
+			assert.deepStrictEqual(r.getStateById(new TestId(['ctrlId', 'id-a']).toString())?.ownComputedState, TestResultState.Failed);
+			assert.deepStrictEqual(r.getStateById(new TestId(['ctrlId', 'id-a']).toString())?.tasks[0].state, TestResultState.Failed);
 			assert.deepStrictEqual(getChangeSummary(), [
 				{ label: 'a', reason: TestResultItemChangeReason.OwnStateChange },
+				{ label: 'root', reason: TestResultItemChangeReason.ComputedStateChange },
 				{ label: 'aa', reason: TestResultItemChangeReason.OwnStateChange },
 				{ label: 'ab', reason: TestResultItemChangeReason.OwnStateChange },
+
+				{ label: 'a', reason: TestResultItemChangeReason.OwnStateChange },
 				{ label: 'root', reason: TestResultItemChangeReason.ComputedStateChange },
+				{ label: 'aa', reason: TestResultItemChangeReason.OwnStateChange },
+				{ label: 'ab', reason: TestResultItemChangeReason.OwnStateChange },
 			]);
 		});
 
 		test('updateState', () => {
-			r.updateState('id-a', TestRunState.Running);
-			assert.deepStrictEqual(r.counts, {
-				...makeEmptyCounts(),
-				[TestRunState.Running]: 1,
-				[TestRunState.Unset]: 3,
-			});
-			assert.deepStrictEqual(r.getStateById('id-a')?.state.state, TestRunState.Running);
+			changed.clear();
+			const testId = new TestId(['ctrlId', 'id-a', 'id-aa']).toString();
+			r.updateState(testId, 't', TestResultState.Running);
+			const c = makeEmptyCounts();
+			c[TestResultState.Running] = 1;
+			c[TestResultState.Unset] = 3;
+			assert.deepStrictEqual(r.counts, c);
+			assert.deepStrictEqual(r.getStateById(testId)?.ownComputedState, TestResultState.Running);
 			// update computed state:
-			assert.deepStrictEqual(r.getStateById('id-root')?.computedState, TestRunState.Running);
+			assert.deepStrictEqual(r.getStateById(tests.root.id)?.computedState, TestResultState.Running);
 			assert.deepStrictEqual(getChangeSummary(), [
-				{ label: 'a', reason: TestResultItemChangeReason.OwnStateChange },
+				{ label: 'aa', reason: TestResultItemChangeReason.OwnStateChange },
+				{ label: 'a', reason: TestResultItemChangeReason.ComputedStateChange },
 				{ label: 'root', reason: TestResultItemChangeReason.ComputedStateChange },
 			]);
+
+			r.updateState(testId, 't', TestResultState.Passed);
+			assert.deepStrictEqual(r.getStateById(testId)?.ownComputedState, TestResultState.Passed);
+
+			r.updateState(testId, 't', TestResultState.Errored);
+			assert.deepStrictEqual(r.getStateById(testId)?.ownComputedState, TestResultState.Errored);
+
+			r.updateState(testId, 't', TestResultState.Passed);
+			assert.deepStrictEqual(r.getStateById(testId)?.ownComputedState, TestResultState.Errored);
 		});
 
-		test('retire', () => {
-			r.retire('id-a');
-			assert.deepStrictEqual(getChangeSummary(), [
-				{ label: 'a', reason: TestResultItemChangeReason.Retired },
-				{ label: 'aa', reason: TestResultItemChangeReason.ParentRetired },
-				{ label: 'ab', reason: TestResultItemChangeReason.ParentRetired },
-			]);
-
+		test('ignores outside run', () => {
 			changed.clear();
-			r.retire('id-a');
-			assert.strictEqual(changed.size, 0);
-		});
-
-		test('addTestToRun', () => {
-			r.updateState('id-b', TestRunState.Running);
-			assert.deepStrictEqual(r.counts, {
-				...makeEmptyCounts(),
-				[TestRunState.Running]: 1,
-				[TestRunState.Unset]: 4,
-			});
-			assert.deepStrictEqual(r.getStateById('id-b')?.state.state, TestRunState.Running);
-			// update computed state:
-			assert.deepStrictEqual(r.getStateById('id-root')?.computedState, TestRunState.Running);
+			r.updateState(new TestId(['ctrlId', 'id-b']).toString(), 't', TestResultState.Running);
+			const c = makeEmptyCounts();
+			c[TestResultState.Unset] = 4;
+			assert.deepStrictEqual(r.counts, c);
+			assert.deepStrictEqual(r.getStateById(new TestId(['ctrlId', 'id-b']).toString()), undefined);
 		});
 
 		test('markComplete', () => {
-			r.setAllToState(TestRunState.Queued, () => true);
-			r.updateState('id-aa', TestRunState.Passed);
+			r.setAllToStatePublic(TestResultState.Queued, 't', () => true);
+			r.updateState(new TestId(['ctrlId', 'id-a', 'id-aa']).toString(), 't', TestResultState.Passed);
 			changed.clear();
 
 			r.markComplete();
 
-			assert.deepStrictEqual(r.counts, {
-				...makeEmptyCounts(),
-				[TestRunState.Passed]: 1,
-				[TestRunState.Unset]: 3,
-			});
+			const c = makeEmptyCounts();
+			c[TestResultState.Unset] = 3;
+			c[TestResultState.Passed] = 1;
+			assert.deepStrictEqual(r.counts, c);
 
-			assert.deepStrictEqual(r.getStateById('id-root')?.state.state, TestRunState.Unset);
-			assert.deepStrictEqual(r.getStateById('id-aa')?.state.state, TestRunState.Passed);
+			assert.deepStrictEqual(r.getStateById(tests.root.id)?.ownComputedState, TestResultState.Unset);
+			assert.deepStrictEqual(r.getStateById(new TestId(['ctrlId', 'id-a', 'id-aa']).toString())?.ownComputedState, TestResultState.Passed);
 		});
 	});
 
@@ -145,12 +186,12 @@ suite('Workbench - Test Results Service', () => {
 		let results: TestResultService;
 
 		class TestTestResultService extends TestResultService {
-			override persistScheduler = { schedule: () => this.persistImmediately() } as any;
+			protected override persistScheduler = { schedule: () => this.persistImmediately() } as any;
 		}
 
 		setup(() => {
 			storage = new InMemoryResultStorage(new TestStorageService(), new NullLogService());
-			results = new TestTestResultService(new MockContextKeyService(), storage);
+			results = new TestTestResultService(new MockContextKeyService(), storage, new TestProfileService(new MockContextKeyService(), new TestStorageService()));
 		});
 
 		test('pushes new result', () => {
@@ -160,27 +201,27 @@ suite('Workbench - Test Results Service', () => {
 
 		test('serializes and re-hydrates', async () => {
 			results.push(r);
-			r.updateState('id-aa', TestRunState.Passed);
+			r.updateState(new TestId(['ctrlId', 'id-a', 'id-aa']).toString(), 't', TestResultState.Passed, 42);
 			r.markComplete();
-			await timeout(0); // allow persistImmediately async to happen
+			await timeout(10); // allow persistImmediately async to happen
 
 			results = new TestResultService(
 				new MockContextKeyService(),
 				storage,
+				new TestProfileService(new MockContextKeyService(), new TestStorageService()),
 			);
 
 			assert.strictEqual(0, results.results.length);
-			await timeout(0); // allow load promise to resolve
+			await timeout(10); // allow load promise to resolve
 			assert.strictEqual(1, results.results.length);
 
-			const [rehydrated, actual] = results.getStateById('id-root')!;
-			const expected: any = { ...r.getStateById('id-root')! };
-			delete expected.state.duration; // delete undefined props that don't survive serialization
-			delete expected.item.range;
-			delete expected.item.description;
+			const [rehydrated, actual] = results.getStateById(tests.root.id)!;
+			const expected: any = { ...r.getStateById(tests.root.id)! };
 			expected.item.uri = actual.item.uri;
-
-			assert.deepStrictEqual(actual, { ...expected, retired: true });
+			expected.item.children = undefined;
+			expected.retired = true;
+			delete expected.children;
+			assert.deepStrictEqual(actual, { ...expected });
 			assert.deepStrictEqual(rehydrated.counts, r.counts);
 			assert.strictEqual(typeof rehydrated.completedAt, 'number');
 		});
@@ -189,11 +230,10 @@ suite('Workbench - Test Results Service', () => {
 			results.push(r);
 			r.markComplete();
 
-			const r2 = results.push(LiveTestResult.from(
+			const r2 = results.push(new LiveTestResult(
 				'',
-				[await getInitializedMainTestCollection()],
-				emptyOutputController(),
-				{ tests: [{ src: { provider: 'provider', tree: 0 }, testId: '1' }], debug: false }
+				false,
+				defaultOpts([]),
 			));
 			results.clear();
 
@@ -202,11 +242,10 @@ suite('Workbench - Test Results Service', () => {
 
 		test('keeps ongoing tests on top', async () => {
 			results.push(r);
-			const r2 = results.push(LiveTestResult.from(
+			const r2 = results.push(new LiveTestResult(
 				'',
-				[await getInitializedMainTestCollection()],
-				emptyOutputController(),
-				{ tests: [{ src: { provider: 'provider', tree: 0 }, testId: '1' }], debug: false }
+				false,
+				defaultOpts([]),
 			));
 
 			assert.deepStrictEqual(results.results, [r2, r]);
@@ -216,17 +255,19 @@ suite('Workbench - Test Results Service', () => {
 			assert.deepStrictEqual(results.results, [r, r2]);
 		});
 
-		const makeHydrated = async (completedAt = 42, state = TestRunState.Passed) => new HydratedTestResult({
+		const makeHydrated = async (completedAt = 42, state = TestResultState.Passed) => new HydratedTestResult({
 			completedAt,
 			id: 'some-id',
+			tasks: [{ id: 't', name: undefined }],
+			name: 'hello world',
+			request: defaultOpts([]),
 			items: [{
-				...(await getInitializedMainTestCollection()).getNodeById('id-a')!,
-				state: { state, duration: 0, messages: [] },
+				...(await getInitializedMainTestCollection()).getNodeById(new TestId(['ctrlId', 'id-a']).toString())!,
+				tasks: [{ state, duration: 0, messages: [] }],
 				computedState: state,
-				retired: undefined,
-				children: [],
+				ownComputedState: state,
 			}]
-		}, () => Promise.resolve(bufferToStream(VSBuffer.alloc(0))));
+		});
 
 		test('pushes hydrated results', async () => {
 			results.push(r);
@@ -235,16 +276,14 @@ suite('Workbench - Test Results Service', () => {
 			assert.deepStrictEqual(results.results, [r, hydrated]);
 		});
 
-		test('deduplicates identical results', async () => {
+		test('inserts in correct order', async () => {
 			results.push(r);
 			const hydrated1 = await makeHydrated();
 			results.push(hydrated1);
-			const hydrated2 = await makeHydrated();
-			results.push(hydrated2);
 			assert.deepStrictEqual(results.results, [r, hydrated1]);
 		});
 
-		test('does not deduplicate if different completedAt', async () => {
+		test('inserts in correct order 2', async () => {
 			results.push(r);
 			const hydrated1 = await makeHydrated();
 			results.push(hydrated1);
@@ -252,14 +291,46 @@ suite('Workbench - Test Results Service', () => {
 			results.push(hydrated2);
 			assert.deepStrictEqual(results.results, [r, hydrated1, hydrated2]);
 		});
+	});
 
-		test('does not deduplicate if different tests', async () => {
-			results.push(r);
-			const hydrated1 = await makeHydrated();
-			results.push(hydrated1);
-			const hydrated2 = await makeHydrated(undefined, TestRunState.Failed);
-			results.push(hydrated2);
-			assert.deepStrictEqual(results.results, [r, hydrated2, hydrated1]);
+	test('resultItemParents', function () {
+		assert.deepStrictEqual([...resultItemParents(r, r.getStateById(new TestId(['ctrlId', 'id-a', 'id-aa']).toString())!)], [
+			r.getStateById(new TestId(['ctrlId', 'id-a', 'id-aa']).toString()),
+			r.getStateById(new TestId(['ctrlId', 'id-a']).toString()),
+			r.getStateById(new TestId(['ctrlId']).toString()),
+		]);
+
+		assert.deepStrictEqual([...resultItemParents(r, r.getStateById(tests.root.id)!)], [
+			r.getStateById(tests.root.id),
+		]);
+	});
+
+	suite('output controller', () => {
+		test('reads live output ranges', async () => {
+			const ctrl = new TaskRawOutput();
+
+			ctrl.append(VSBuffer.fromString('12345'));
+			ctrl.append(VSBuffer.fromString('67890'));
+			ctrl.append(VSBuffer.fromString('12345'));
+			ctrl.append(VSBuffer.fromString('67890'));
+
+			assert.deepStrictEqual(ctrl.getRange(0, 5), VSBuffer.fromString('12345'));
+			assert.deepStrictEqual(ctrl.getRange(5, 5), VSBuffer.fromString('67890'));
+			assert.deepStrictEqual(ctrl.getRange(7, 6), VSBuffer.fromString('890123'));
+			assert.deepStrictEqual(ctrl.getRange(15, 5), VSBuffer.fromString('67890'));
+			assert.deepStrictEqual(ctrl.getRange(15, 10), VSBuffer.fromString('67890'));
+		});
+
+		test('corrects offsets for marked ranges', async () => {
+			const ctrl = new TaskRawOutput();
+
+			const a1 = ctrl.append(VSBuffer.fromString('12345'), 1);
+			const a2 = ctrl.append(VSBuffer.fromString('67890'), 1234);
+			const a3 = ctrl.append(VSBuffer.fromString('with new line\r\n'), 4);
+
+			assert.deepStrictEqual(ctrl.getRange(a1.offset, a1.length), VSBuffer.fromString('\x1b]633;SetMark;Id=s1;Hidden\x0712345\x1b]633;SetMark;Id=e1;Hidden\x07'));
+			assert.deepStrictEqual(ctrl.getRange(a2.offset, a2.length), VSBuffer.fromString('\x1b]633;SetMark;Id=s1234;Hidden\x0767890\x1b]633;SetMark;Id=e1234;Hidden\x07'));
+			assert.deepStrictEqual(ctrl.getRange(a3.offset, a3.length), VSBuffer.fromString('\x1b]633;SetMark;Id=s4;Hidden\x07with new line\x1b]633;SetMark;Id=e4;Hidden\x07\r\n'));
 		});
 	});
 });

@@ -8,21 +8,21 @@ import { IExpression, splitGlobAware, getEmptyExpression, ParsedExpression, pars
 import * as strings from 'vs/base/common/strings';
 import { URI } from 'vs/base/common/uri';
 import { relativePath } from 'vs/base/common/resources';
-import { TernarySearchTree } from 'vs/base/common/map';
-import { IUriIdentityService } from 'vs/workbench/services/uriIdentity/common/uriIdentity';
+import { TernarySearchTree } from 'vs/base/common/ternarySearchTree';
+import { IUriIdentityService } from 'vs/platform/uriIdentity/common/uriIdentity';
 
 export class ResourceGlobMatcher {
 
 	private readonly globalExpression: ParsedExpression;
-	private readonly expressionsByRoot: TernarySearchTree<URI, { root: URI, expression: ParsedExpression }>;
+	private readonly expressionsByRoot: TernarySearchTree<URI, { root: URI; expression: ParsedExpression }>;
 
 	constructor(
 		globalExpression: IExpression,
-		rootExpressions: { root: URI, expression: IExpression }[],
+		rootExpressions: { root: URI; expression: IExpression }[],
 		uriIdentityService: IUriIdentityService
 	) {
 		this.globalExpression = parse(globalExpression);
-		this.expressionsByRoot = TernarySearchTree.forUris<{ root: URI, expression: ParsedExpression }>(uri => uriIdentityService.extUri.ignorePathCasing(uri));
+		this.expressionsByRoot = TernarySearchTree.forUris<{ root: URI; expression: ParsedExpression }>(uri => uriIdentityService.extUri.ignorePathCasing(uri));
 		for (const expression of rootExpressions) {
 			this.expressionsByRoot.set(expression.root, { root: expression.root, expression: parse(expression.expression) });
 		}
@@ -48,7 +48,7 @@ export class FilterOptions {
 	readonly showWarnings: boolean = false;
 	readonly showErrors: boolean = false;
 	readonly showInfos: boolean = false;
-	readonly textFilter: { readonly text: string, readonly negate: boolean };
+	readonly textFilter: { readonly text: string; readonly negate: boolean };
 	readonly excludesMatcher: ResourceGlobMatcher;
 	readonly includesMatcher: ResourceGlobMatcher;
 
@@ -56,7 +56,7 @@ export class FilterOptions {
 
 	constructor(
 		readonly filter: string,
-		filesExclude: { root: URI, expression: IExpression }[] | IExpression,
+		filesExclude: { root: URI; expression: IExpression }[] | IExpression,
 		showWarnings: boolean,
 		showErrors: boolean,
 		showInfos: boolean,
@@ -69,6 +69,15 @@ export class FilterOptions {
 
 		const filesExcludeByRoot = Array.isArray(filesExclude) ? filesExclude : [];
 		const excludesExpression: IExpression = Array.isArray(filesExclude) ? getEmptyExpression() : filesExclude;
+
+		for (const { expression } of filesExcludeByRoot) {
+			for (const pattern of Object.keys(expression)) {
+				if (!pattern.endsWith('/**')) {
+					// Append `/**` to pattern to match a parent folder #103631
+					expression[`${strings.rtrim(pattern, '/')}/**`] = expression[pattern];
+				}
+			}
+		}
 
 		const negate = filter.startsWith('!');
 		this.textFilter = { text: (negate ? strings.ltrim(filter, '!') : filter).trim(), negate };

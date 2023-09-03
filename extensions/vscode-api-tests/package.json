@@ -4,13 +4,61 @@
   "version": "0.0.1",
   "publisher": "vscode",
   "license": "MIT",
-  "enableProposedApi": true,
+  "enabledApiProposals": [
+    "authSession",
+    "contribViewsRemote",
+    "contribStatusBarItems",
+    "customEditorMove",
+    "diffCommand",
+    "documentFiltersExclusive",
+    "documentPaste",
+    "editorInsets",
+    "extensionRuntime",
+    "extensionsAny",
+    "externalUriOpener",
+    "fileSearchProvider",
+    "findTextInFiles",
+    "fsChunks",
+    "mappedEditsProvider",
+    "notebookCellExecutionState",
+    "notebookDeprecated",
+    "notebookLiveShare",
+    "notebookMessaging",
+    "notebookMime",
+    "portsAttributes",
+    "quickPickSortByLabel",
+    "readonlyMessage",
+    "resolvers",
+    "saveEditor",
+    "scmActionButton",
+    "scmSelectedProvider",
+    "scmTextDocument",
+    "scmValidation",
+    "taskPresentationGroup",
+    "terminalDataWriteEvent",
+    "terminalDimensions",
+    "tunnels",
+    "envShellEvent",
+    "testCoverage",
+    "testObserver",
+    "testMessageContextValue",
+    "textSearchProvider",
+    "timeline",
+    "tokenInformation",
+	"treeViewActiveItem",
+    "treeViewReveal",
+    "workspaceTrust",
+    "telemetry",
+    "windowActivity",
+    "interactiveUserActions"
+  ],
   "private": true,
   "activationEvents": [],
   "main": "./out/extension",
   "engines": {
     "vscode": "^1.55.0"
   },
+  "icon": "media/icon.png",
   "contributes": {
     "configuration": {
       "type": "object",
@@ -116,9 +164,9 @@
         ]
       }
     ],
-    "notebookProvider": [
+    "notebooks": [
       {
-        "viewType": "notebookCoreTest",
+        "type": "notebookCoreTest",
         "displayName": "Notebook Core Test",
         "selector": [
           {
@@ -128,7 +176,7 @@
         ]
       },
       {
-        "viewType": "notebook.nbdtest",
+        "type": "notebook.nbdtest",
         "displayName": "notebook.nbdtest",
         "selector": [
           {
@@ -137,7 +185,7 @@
         ]
       },
       {
-        "viewType": "notebook.nbdserializer",
+        "type": "notebook.nbdserializer",
         "displayName": "notebook.nbdserializer",
         "selector": [
           {
@@ -145,15 +193,27 @@
           }
         ]
       }
-    ]
+    ],
+    "statusBarItems": {
+      "id": "myStaticItem",
+      "alignment": "right",
+      "priority": 17,
+      "name": "My Static Item",
+      "text": "Hello $(globe)",
+      "tooltip": "Hover World",
+      "accessibilityInformation": {
+        "label": "Hello World",
+        "role": "button"
+      }
+    }
   },
   "scripts": {
     "compile": "node ./node_modules/vscode/bin/compile -watch -p ./",
     "vscode:prepublish": "node ../../node_modules/gulp/bin/gulp.js --gulpfile ../../build/gulpfile.extensions.js compile-extension:vscode-api-tests ./tsconfig.json"
   },
   "devDependencies": {
-    "@types/mocha": "^8.2.0",
-    "@types/node": "^12.19.9"
+    "@types/mocha": "^9.1.1",
+    "@types/node": "18.x"
   },
   "repository": {
     "type": "git",

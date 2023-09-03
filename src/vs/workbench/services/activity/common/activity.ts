@@ -5,7 +5,7 @@
 
 import { IDisposable } from 'vs/base/common/lifecycle';
 import { createDecorator } from 'vs/platform/instantiation/common/instantiation';
-import { ThemeIcon } from 'vs/platform/theme/common/themeService';
+import { ThemeIcon } from 'vs/base/common/themables';
 
 export interface IActivity {
 	readonly badge: IBadge;
@@ -46,7 +46,7 @@ export interface IBadge {
 
 class BaseBadge implements IBadge {
 
-	constructor(public readonly descriptorFn: (arg: any) => string) {
+	constructor(readonly descriptorFn: (arg: any) => string) {
 		this.descriptorFn = descriptorFn;
 	}
 
@@ -57,7 +57,7 @@ class BaseBadge implements IBadge {
 
 export class NumberBadge extends BaseBadge {
 
-	constructor(public readonly number: number, descriptorFn: (num: number) => string) {
+	constructor(readonly number: number, descriptorFn: (num: number) => string) {
 		super(descriptorFn);
 
 		this.number = number;
@@ -70,13 +70,13 @@ export class NumberBadge extends BaseBadge {
 
 export class TextBadge extends BaseBadge {
 
-	constructor(public readonly text: string, descriptorFn: () => string) {
+	constructor(readonly text: string, descriptorFn: () => string) {
 		super(descriptorFn);
 	}
 }
 
 export class IconBadge extends BaseBadge {
-	constructor(public readonly icon: ThemeIcon, descriptorFn: () => string) {
+	constructor(readonly icon: ThemeIcon, descriptorFn: () => string) {
 		super(descriptorFn);
 	}
 }

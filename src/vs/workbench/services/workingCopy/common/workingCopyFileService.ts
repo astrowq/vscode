@@ -4,18 +4,23 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { createDecorator, IInstantiationService } from 'vs/platform/instantiation/common/instantiation';
-import { registerSingleton } from 'vs/platform/instantiation/common/extensions';
-import { Event } from 'vs/base/common/event';
-import { AsyncEmitter, IWaitUntil, Promises } from 'vs/base/common/async';
+import { InstantiationType, registerSingleton } from 'vs/platform/instantiation/common/extensions';
+import { Event, AsyncEmitter, IWaitUntil } from 'vs/base/common/event';
+import { Promises } from 'vs/base/common/async';
 import { insert } from 'vs/base/common/arrays';
 import { URI } from 'vs/base/common/uri';
 import { Disposable, IDisposable, toDisposable } from 'vs/base/common/lifecycle';
 import { IFileService, FileOperation, IFileStatWithMetadata } from 'vs/platform/files/common/files';
 import { CancellationToken } from 'vs/base/common/cancellation';
-import { IWorkingCopyService, IWorkingCopy } from 'vs/workbench/services/workingCopy/common/workingCopyService';
-import { IUriIdentityService } from 'vs/workbench/services/uriIdentity/common/uriIdentity';
+import { IWorkingCopyService } from 'vs/workbench/services/workingCopy/common/workingCopyService';
+import { IWorkingCopy } from 'vs/workbench/services/workingCopy/common/workingCopy';
+import { IUriIdentityService } from 'vs/platform/uriIdentity/common/uriIdentity';
 import { WorkingCopyFileOperationParticipant } from 'vs/workbench/services/workingCopy/common/workingCopyFileOperationParticipant';
 import { VSBuffer, VSBufferReadable, VSBufferReadableStream } from 'vs/base/common/buffer';
+import { SaveReason } from 'vs/workbench/common/editor';
+import { IProgress, IProgressStep } from 'vs/platform/progress/common/progress';
+import { StoredFileWorkingCopySaveParticipant } from 'vs/workbench/services/workingCopy/common/storedFileWorkingCopySaveParticipant';
+import { IStoredFileWorkingCopy, IStoredFileWorkingCopyModel } from 'vs/workbench/services/workingCopy/common/storedFileWorkingCopy';
 
 export const IWorkingCopyFileService = createDecorator<IWorkingCopyFileService>('workingCopyFileService');
 
@@ -29,7 +34,7 @@ export interface SourceTargetPair {
 	/**
 	 * The target resource the event is about.
 	 */
-	readonly target: URI
+	readonly target: URI;
 }
 
 export interface IFileOperationUndoRedoInfo {
@@ -42,7 +47,7 @@ export interface IFileOperationUndoRedoInfo {
 	/**
 	 * Flag indicates if the operation is an undo.
 	 */
-	isUndoing?: boolean
+	isUndoing?: boolean;
 }
 
 export interface WorkingCopyFileEvent extends IWaitUntil {
@@ -61,7 +66,7 @@ export interface WorkingCopyFileEvent extends IWaitUntil {
 	/**
 	 * The array of source/target pair of files involved in given operation.
 	 */
-	readonly files: SourceTargetPair[]
+	readonly files: readonly SourceTargetPair[];
 }
 
 export interface IWorkingCopyFileOperationParticipant {
@@ -79,13 +84,27 @@ export interface IWorkingCopyFileOperationParticipant {
 	): Promise<void>;
 }
 
+export interface IStoredFileWorkingCopySaveParticipant {
+
+	/**
+	 * Participate in a save operation of file stored working copies.
+	 * Allows to make changes before content is being saved to disk.
+	 */
+	participate(
+		workingCopy: IStoredFileWorkingCopy<IStoredFileWorkingCopyModel>,
+		context: { reason: SaveReason },
+		progress: IProgress<IProgressStep>,
+		token: CancellationToken
+	): Promise<void>;
+}
+
 export interface ICreateOperation {
 	resource: URI;
 	overwrite?: boolean;
 }
 
 export interface ICreateFileOperation extends ICreateOperation {
-	contents?: VSBuffer | VSBufferReadable | VSBufferReadableStream,
+	contents?: VSBuffer | VSBufferReadable | VSBufferReadableStream;
 }
 
 export interface IDeleteOperation {
@@ -157,6 +176,26 @@ export interface IWorkingCopyFileService {
 	//#endregion
 
 
+	//#region Stored File Working Copy save participants
+
+	/**
+	 * Whether save participants are present for stored file working copies.
+	 */
+	get hasSaveParticipants(): boolean;
+
+	/**
+	 * Adds a participant for save operations on stored file working copies.
+	 */
+	addSaveParticipant(participant: IStoredFileWorkingCopySaveParticipant): IDisposable;
+
+	/**
+	 * Runs all available save participants for stored file working copies.
+	 */
+	runSaveParticipants(workingCopy: IStoredFileWorkingCopy<IStoredFileWorkingCopyModel>, context: { reason: SaveReason }, token: CancellationToken): Promise<void>;
+
+	//#endregion
+
+
 	//#region File operations
 
 	/**
@@ -165,7 +204,7 @@ export interface IWorkingCopyFileService {
 	 * Working copy owners can listen to the `onWillRunWorkingCopyFileOperation` and
 	 * `onDidRunWorkingCopyFileOperation` events to participate.
 	 */
-	create(operations: ICreateFileOperation[], token: CancellationToken, undoInfo?: IFileOperationUndoRedoInfo): Promise<IFileStatWithMetadata[]>;
+	create(operations: ICreateFileOperation[], token: CancellationToken, undoInfo?: IFileOperationUndoRedoInfo): Promise<readonly IFileStatWithMetadata[]>;
 
 	/**
 	 * Will create a folder and any parent folder that needs to be created.
@@ -176,7 +215,7 @@ export interface IWorkingCopyFileService {
 	 * Note: events will only be emitted for the provided resource, but not any
 	 * parent folders that are being created as part of the operation.
 	 */
-	createFolder(operations: ICreateOperation[], token: CancellationToken, undoInfo?: IFileOperationUndoRedoInfo): Promise<IFileStatWithMetadata[]>;
+	createFolder(operations: ICreateOperation[], token: CancellationToken, undoInfo?: IFileOperationUndoRedoInfo): Promise<readonly IFileStatWithMetadata[]>;
 
 	/**
 	 * Will move working copies matching the provided resources and corresponding children
@@ -185,7 +224,7 @@ export interface IWorkingCopyFileService {
 	 * Working copy owners can listen to the `onWillRunWorkingCopyFileOperation` and
 	 * `onDidRunWorkingCopyFileOperation` events to participate.
 	 */
-	move(operations: IMoveOperation[], token: CancellationToken, undoInfo?: IFileOperationUndoRedoInfo): Promise<IFileStatWithMetadata[]>;
+	move(operations: IMoveOperation[], token: CancellationToken, undoInfo?: IFileOperationUndoRedoInfo): Promise<readonly IFileStatWithMetadata[]>;
 
 	/**
 	 * Will copy working copies matching the provided resources and corresponding children
@@ -194,7 +233,7 @@ export interface IWorkingCopyFileService {
 	 * Working copy owners can listen to the `onWillRunWorkingCopyFileOperation` and
 	 * `onDidRunWorkingCopyFileOperation` events to participate.
 	 */
-	copy(operations: ICopyOperation[], token: CancellationToken, undoInfo?: IFileOperationUndoRedoInfo): Promise<IFileStatWithMetadata[]>;
+	copy(operations: ICopyOperation[], token: CancellationToken, undoInfo?: IFileOperationUndoRedoInfo): Promise<readonly IFileStatWithMetadata[]>;
 
 	/**
 	 * Will delete working copies matching the provided resources and children
@@ -222,7 +261,7 @@ export interface IWorkingCopyFileService {
 	 * If the resource is a folder and the scheme supports file operations, a working
 	 * copy that is dirty and is a child of that folder will also be returned.
 	 */
-	getDirty(resource: URI): IWorkingCopy[];
+	getDirty(resource: URI): readonly IWorkingCopy[];
 
 	//#endregion
 }
@@ -257,7 +296,7 @@ export class WorkingCopyFileService extends Disposable implements IWorkingCopyFi
 		// register a default working copy provider that uses the working copy service
 		this._register(this.registerWorkingCopyProvider(resource => {
 			return this.workingCopyService.workingCopies.filter(workingCopy => {
-				if (this.fileService.canHandleResource(resource)) {
+				if (this.fileService.hasProvider(resource)) {
 					// only check for parents if the resource can be handled
 					// by the file system where we then assume a folder like
 					// path structure
@@ -443,6 +482,22 @@ export class WorkingCopyFileService extends Disposable implements IWorkingCopyFi
 
 	//#endregion
 
+	//#region Save participants (stored file working copies only)
+
+	private readonly saveParticipants = this._register(this.instantiationService.createInstance(StoredFileWorkingCopySaveParticipant));
+
+	get hasSaveParticipants(): boolean { return this.saveParticipants.length > 0; }
+
+	addSaveParticipant(participant: IStoredFileWorkingCopySaveParticipant): IDisposable {
+		return this.saveParticipants.addSaveParticipant(participant);
+	}
+
+	runSaveParticipants(workingCopy: IStoredFileWorkingCopy<IStoredFileWorkingCopyModel>, context: { reason: SaveReason }, token: CancellationToken): Promise<void> {
+		return this.saveParticipants.participate(workingCopy, context, token);
+	}
+
+	//#endregion
+
 
 	//#region Path related
 
@@ -470,4 +525,4 @@ export class WorkingCopyFileService extends Disposable implements IWorkingCopyFi
 	//#endregion
 }
 
-registerSingleton(IWorkingCopyFileService, WorkingCopyFileService, true);
+registerSingleton(IWorkingCopyFileService, WorkingCopyFileService, InstantiationType.Delayed);

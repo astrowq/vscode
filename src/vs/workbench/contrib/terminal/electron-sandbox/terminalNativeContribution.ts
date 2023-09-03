@@ -4,31 +4,33 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { ipcRenderer } from 'vs/base/parts/sandbox/electron-sandbox/globals';
-import { INativeOpenFileRequest } from 'vs/platform/windows/common/windows';
+import { INativeOpenFileRequest } from 'vs/platform/window/common/window';
 import { URI } from 'vs/base/common/uri';
 import { IFileService } from 'vs/platform/files/common/files';
-import { IInstantiationService } from 'vs/platform/instantiation/common/instantiation';
 import { registerRemoteContributions } from 'vs/workbench/contrib/terminal/electron-sandbox/terminalRemote';
 import { IRemoteAgentService } from 'vs/workbench/services/remote/common/remoteAgentService';
-import { INativeHostService } from 'vs/platform/native/electron-sandbox/native';
+import { INativeHostService } from 'vs/platform/native/common/native';
 import { Disposable } from 'vs/base/common/lifecycle';
 import { ITerminalService } from 'vs/workbench/contrib/terminal/browser/terminal';
 import { IWorkbenchContribution } from 'vs/workbench/common/contributions';
 
 export class TerminalNativeContribution extends Disposable implements IWorkbenchContribution {
-	public _serviceBrand: undefined;
+	declare _serviceBrand: undefined;
 
 	constructor(
 		@IFileService private readonly _fileService: IFileService,
 		@ITerminalService private readonly _terminalService: ITerminalService,
-		@IInstantiationService readonly instantiationService: IInstantiationService,
-		@IRemoteAgentService readonly remoteAgentService: IRemoteAgentService,
-		@INativeHostService readonly nativeHostService: INativeHostService
+		@IRemoteAgentService remoteAgentService: IRemoteAgentService,
+		@INativeHostService nativeHostService: INativeHostService
 	) {
 		super();
 
-		ipcRenderer.on('vscode:openFiles', (_: unknown, request: INativeOpenFileRequest) => this._onOpenFileRequest(request));
+		ipcRenderer.on('vscode:openFiles', (_: unknown, request: INativeOpenFileRequest) => { this._onOpenFileRequest(request); });
 		this._register(nativeHostService.onDidResumeOS(() => this._onOsResume()));
+
+		this._terminalService.setNativeDelegate({
+			getWindowCount: () => nativeHostService.getWindowCount()
+		});
 
 		const connection = remoteAgentService.getConnection();
 		if (connection && connection.remoteAuthority) {
@@ -37,7 +39,9 @@ export class TerminalNativeContribution extends Disposable implements IWorkbench
 	}
 
 	private _onOsResume(): void {
-		this._terminalService.terminalInstances.forEach(instance => instance.forceRedraw());
+		for (const instance of this._terminalService.instances) {
+			instance.xterm?.forceRedraw();
+		}
 	}
 
 	private async _onOpenFileRequest(request: INativeOpenFileRequest): Promise<void> {
@@ -49,7 +53,7 @@ export class TerminalNativeContribution extends Disposable implements IWorkbench
 			await this._whenFileDeleted(waitMarkerFileUri);
 
 			// Focus active terminal
-			this._terminalService.getActiveInstance()?.focus();
+			this._terminalService.activeInstance?.focus();
 		}
 	}
 

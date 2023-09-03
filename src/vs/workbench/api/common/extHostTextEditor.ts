@@ -8,13 +8,14 @@ import { illegalArgument, readonly } from 'vs/base/common/errors';
 import { IdGenerator } from 'vs/base/common/idGenerator';
 import { TextEditorCursorStyle } from 'vs/editor/common/config/editorOptions';
 import { IRange } from 'vs/editor/common/core/range';
-import { ISingleEditOperation } from 'vs/editor/common/model';
+import { ISingleEditOperation } from 'vs/editor/common/core/editOperation';
 import { IResolvedTextEditorConfiguration, ITextEditorConfigurationUpdate, MainThreadTextEditorsShape } from 'vs/workbench/api/common/extHost.protocol';
 import * as TypeConverters from 'vs/workbench/api/common/extHostTypeConverters';
 import { EndOfLine, Position, Range, Selection, SnippetString, TextEditorLineNumbersStyle, TextEditorRevealType } from 'vs/workbench/api/common/extHostTypes';
 import type * as vscode from 'vscode';
 import { ILogService } from 'vs/platform/log/common/log';
 import { Lazy } from 'vs/base/common/lazy';
+import { IExtensionDescription } from 'vs/platform/extensions/common/extensions';
 
 export class TextEditorDecorationType {
 
@@ -22,9 +23,9 @@ export class TextEditorDecorationType {
 
 	readonly value: vscode.TextEditorDecorationType;
 
-	constructor(proxy: MainThreadTextEditorsShape, options: vscode.DecorationRenderOptions) {
+	constructor(proxy: MainThreadTextEditorsShape, extension: IExtensionDescription, options: vscode.DecorationRenderOptions) {
 		const key = TextEditorDecorationType._Keys.nextId();
-		proxy.$registerTextEditorDecorationType(key, TypeConverters.DecorationRenderOptions.from(options));
+		proxy.$registerTextEditorDecorationType(extension.identifier, key, TypeConverters.DecorationRenderOptions.from(options));
 		this.value = Object.freeze({
 			key,
 			dispose() {
@@ -49,7 +50,7 @@ export interface IEditData {
 	undoStopAfter: boolean;
 }
 
-export class TextEditorEdit {
+class TextEditorEdit {
 
 	private readonly _document: vscode.TextDocument;
 	private readonly _documentVersionId: number;
@@ -59,7 +60,7 @@ export class TextEditorEdit {
 	private _setEndOfLine: EndOfLine | undefined = undefined;
 	private _finalized: boolean = false;
 
-	constructor(document: vscode.TextDocument, options: { undoStopBefore: boolean; undoStopAfter: boolean; }) {
+	constructor(document: vscode.TextDocument, options: { undoStopBefore: boolean; undoStopAfter: boolean }) {
 		this._document = document;
 		this._documentVersionId = document.version;
 		this._undoStopBefore = options.undoStopBefore;
@@ -142,6 +143,7 @@ export class ExtHostTextEditorOptions {
 	private _logService: ILogService;
 
 	private _tabSize!: number;
+	private _indentSize!: number;
 	private _insertSpaces!: boolean;
 	private _cursorStyle!: TextEditorCursorStyle;
 	private _lineNumbers!: TextEditorLineNumbersStyle;
@@ -162,6 +164,12 @@ export class ExtHostTextEditorOptions {
 			},
 			set tabSize(value: number | string) {
 				that._setTabSize(value);
+			},
+			get indentSize(): number | 'tabSize' {
+				return that._indentSize;
+			},
+			set indentSize(value: number | 'tabSize') {
+				that._setIndentSize(value);
 			},
 			get insertSpaces(): boolean | string {
 				return that._insertSpaces;
@@ -186,6 +194,7 @@ export class ExtHostTextEditorOptions {
 
 	public _accept(source: IResolvedTextEditorConfiguration): void {
 		this._tabSize = source.tabSize;
+		this._indentSize = source.indentSize;
 		this._insertSpaces = source.insertSpaces;
 		this._cursorStyle = source.cursorStyle;
 		this._lineNumbers = TypeConverters.TextEditorLineNumbersStyle.to(source.lineNumbers);
@@ -225,8 +234,47 @@ export class ExtHostTextEditorOptions {
 			// reflect the new tabSize value immediately
 			this._tabSize = tabSize;
 		}
-		this._warnOnError(this._proxy.$trySetOptions(this._id, {
+		this._warnOnError('setTabSize', this._proxy.$trySetOptions(this._id, {
 			tabSize: tabSize
+		}));
+	}
+
+	// --- internal: indentSize
+
+	private _validateIndentSize(value: number | string): number | 'tabSize' | null {
+		if (value === 'tabSize') {
+			return 'tabSize';
+		}
+		if (typeof value === 'number') {
+			const r = Math.floor(value);
+			return (r > 0 ? r : null);
+		}
+		if (typeof value === 'string') {
+			const r = parseInt(value, 10);
+			if (isNaN(r)) {
+				return null;
+			}
+			return (r > 0 ? r : null);
+		}
+		return null;
+	}
+
+	private _setIndentSize(value: number | string) {
+		const indentSize = this._validateIndentSize(value);
+		if (indentSize === null) {
+			// ignore invalid call
+			return;
+		}
+		if (typeof indentSize === 'number') {
+			if (this._indentSize === indentSize) {
+				// nothing to do
+				return;
+			}
+			// reflect the new indentSize value immediately
+			this._indentSize = indentSize;
+		}
+		this._warnOnError('setIndentSize', this._proxy.$trySetOptions(this._id, {
+			indentSize: indentSize
 		}));
 	}
 
@@ -249,7 +297,7 @@ export class ExtHostTextEditorOptions {
 			// reflect the new insertSpaces value immediately
 			this._insertSpaces = insertSpaces;
 		}
-		this._warnOnError(this._proxy.$trySetOptions(this._id, {
+		this._warnOnError('setInsertSpaces', this._proxy.$trySetOptions(this._id, {
 			insertSpaces: insertSpaces
 		}));
 	}
@@ -262,7 +310,7 @@ export class ExtHostTextEditorOptions {
 			return;
 		}
 		this._cursorStyle = value;
-		this._warnOnError(this._proxy.$trySetOptions(this._id, {
+		this._warnOnError('setCursorStyle', this._proxy.$trySetOptions(this._id, {
 			cursorStyle: value
 		}));
 	}
@@ -275,7 +323,7 @@ export class ExtHostTextEditorOptions {
 			return;
 		}
 		this._lineNumbers = value;
-		this._warnOnError(this._proxy.$trySetOptions(this._id, {
+		this._warnOnError('setLineNumbers', this._proxy.$trySetOptions(this._id, {
 			lineNumbers: TypeConverters.TextEditorLineNumbersStyle.from(value)
 		}));
 	}
@@ -297,18 +345,18 @@ export class ExtHostTextEditorOptions {
 			}
 		}
 
-		// if (typeof newOptions.indentSize !== 'undefined') {
-		// 	const indentSize = this._validateIndentSize(newOptions.indentSize);
-		// 	if (indentSize === 'tabSize') {
-		// 		hasUpdate = true;
-		// 		bulkConfigurationUpdate.indentSize = indentSize;
-		// 	} else if (typeof indentSize === 'number' && this._indentSize !== indentSize) {
-		// 		// reflect the new indentSize value immediately
-		// 		this._indentSize = indentSize;
-		// 		hasUpdate = true;
-		// 		bulkConfigurationUpdate.indentSize = indentSize;
-		// 	}
-		// }
+		if (typeof newOptions.indentSize !== 'undefined') {
+			const indentSize = this._validateIndentSize(newOptions.indentSize);
+			if (indentSize === 'tabSize') {
+				hasUpdate = true;
+				bulkConfigurationUpdate.indentSize = indentSize;
+			} else if (typeof indentSize === 'number' && this._indentSize !== indentSize) {
+				// reflect the new indentSize value immediately
+				this._indentSize = indentSize;
+				hasUpdate = true;
+				bulkConfigurationUpdate.indentSize = indentSize;
+			}
+		}
 
 		if (typeof newOptions.insertSpaces !== 'undefined') {
 			const insertSpaces = this._validateInsertSpaces(newOptions.insertSpaces);
@@ -340,12 +388,15 @@ export class ExtHostTextEditorOptions {
 		}
 
 		if (hasUpdate) {
-			this._warnOnError(this._proxy.$trySetOptions(this._id, bulkConfigurationUpdate));
+			this._warnOnError('setOptions', this._proxy.$trySetOptions(this._id, bulkConfigurationUpdate));
 		}
 	}
 
-	private _warnOnError(promise: Promise<any>): void {
-		promise.catch(err => this._logService.warn(err));
+	private _warnOnError(action: string, promise: Promise<any>): void {
+		promise.catch(err => {
+			this._logService.warn(`ExtHostTextEditorOptions '${action}' failed:'`);
+			this._logService.warn(err);
+		});
 	}
 }
 
@@ -377,7 +428,7 @@ export class ExtHostTextEditor {
 
 		this.value = Object.freeze({
 			get document(): vscode.TextDocument {
-				return document.getValue();
+				return document.value;
 			},
 			set document(_value) {
 				throw readonly('document');
@@ -427,16 +478,16 @@ export class ExtHostTextEditor {
 				throw readonly('viewColumn');
 			},
 			// --- edit
-			edit(callback: (edit: TextEditorEdit) => void, options: { undoStopBefore: boolean; undoStopAfter: boolean; } = { undoStopBefore: true, undoStopAfter: true }): Promise<boolean> {
+			edit(callback: (edit: TextEditorEdit) => void, options: { undoStopBefore: boolean; undoStopAfter: boolean } = { undoStopBefore: true, undoStopAfter: true }): Promise<boolean> {
 				if (that._disposed) {
 					return Promise.reject(new Error('TextEditor#edit not possible on closed editors'));
 				}
-				const edit = new TextEditorEdit(document.getValue(), options);
+				const edit = new TextEditorEdit(document.value, options);
 				callback(edit);
 				return that._applyEdit(edit);
 			},
 			// --- snippet edit
-			insertSnippet(snippet: SnippetString, where?: Position | readonly Position[] | Range | readonly Range[], options: { undoStopBefore: boolean; undoStopAfter: boolean; } = { undoStopBefore: true, undoStopAfter: true }): Promise<boolean> {
+			insertSnippet(snippet: SnippetString, where?: Position | readonly Position[] | Range | readonly Range[], options: { undoStopBefore: boolean; undoStopAfter: boolean } = { undoStopBefore: true, undoStopAfter: true }): Promise<boolean> {
 				if (that._disposed) {
 					return Promise.reject(new Error('TextEditor#insertSnippet not possible on closed editors'));
 				}
@@ -462,7 +513,7 @@ export class ExtHostTextEditor {
 						}
 					}
 				}
-				return _proxy.$tryInsertSnippet(id, snippet.value, ranges, options);
+				return _proxy.$tryInsertSnippet(id, document.value.version, snippet.value, ranges, options);
 			},
 			setDecorations(decorationType: vscode.TextEditorDecorationType, ranges: Range[] | vscode.DecorationOptions[]): void {
 				const willBeEmpty = (ranges.length === 0);
